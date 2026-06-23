@@ -87,8 +87,6 @@ class ServerController(FrankaController):
             data.ctrl[:] = robot_state.tau_J_d
             np.copyto(self._tau_ext_buf, robot_state.tau_ext_hat_filtered)
             mujoco.mj_forward(model, data)
-        else:
-            self._tau_ext_buf[:] = 0.0
 
         # Build state using pre-allocated buffers (no per-iteration allocation)
         self._ee_buf[:3, :3] = data.site(robot.site_id).xmat.reshape(3, 3)
@@ -701,19 +699,30 @@ class _DeskClientV2:
         self._token_id = data.get("tokenId")
         logger.info(f"Acquired control token (tokenId={self._token_id})")
 
-    def release_token(self):
-        """Release the control token (best-effort)."""
+    def release_token(self, *, best_effort: bool = False):
+        """Release the control token.
+
+        Args:
+            best_effort: If True, log warnings instead of raising on failure.
+                         If False (default), raise on non-success response.
+        """
         if self._token is None:
             return
         r = self._req("POST", "/api/system/control-token:release",
                        headers=self._headers())
-        # Best-effort: don't raise on failure (token may already be invalid)
         if r.status_code in (200, 204):
             logger.info("Released control token")
-        else:
+            self._token = None
+            self._token_id = None
+        elif best_effort:
             logger.warning(f"release_token: {r.status_code} {r.text}")
-        self._token = None
-        self._token_id = None
+            self._token = None
+            self._token_id = None
+        else:
+            raise RuntimeError(
+                f"Failed to release control token "
+                f"(status {r.status_code}: {r.text})"
+            )
 
     def validate_token(self) -> bool:
         """Check if our token is still the active one (without releasing it).
@@ -939,7 +948,7 @@ def _unlock_robot(robot_ip: str, username: str = "admin", password: str = "admin
     except Exception as e:
         # Release token so it doesn't get stuck on next start
         try:
-            client.release_token()
+            client.release_token(best_effort=True)
         except Exception:
             pass
         logger.error(f"Failed to unlock robot: {e}")
@@ -1096,7 +1105,7 @@ async def _run_server(robot_ip: str, unlock: bool = True,
     def _release_token_safe():
         if lock_client is not None:
             try:
-                lock_client.release_token()
+                lock_client.release_token(best_effort=True)
             except Exception:
                 pass
     atexit.register(_release_token_safe)
@@ -1263,7 +1272,7 @@ async def _run_server(robot_ip: str, unlock: bool = True,
 
                 stop_progress(4, "Releasing control token")
                 try:
-                    lock_client.release_token()
+                    lock_client.release_token(best_effort=True)
                 except Exception as e:
                     logger.warning(f"Failed to release token: {e}")
             else:
@@ -1271,7 +1280,7 @@ async def _run_server(robot_ip: str, unlock: bool = True,
                 _write_progress(robot_ip, 1, 2, "Stopping 1kHz control loop")
                 _write_progress(robot_ip, 2, 2, "Releasing control token (joints left unlocked)")
                 try:
-                    lock_client.release_token()
+                    lock_client.release_token(best_effort=True)
                 except Exception as e:
                     logger.warning(f"Failed to release token: {e}")
         else:
@@ -1740,7 +1749,7 @@ def start(ip: str = None, *, foreground: bool = False,
             client = _DeskClientV2(ip, username, password, protocol=protocol)
             client._token = saved_token
             client._token_id = saved_token_id
-            client.release_token()
+            client.release_token(best_effort=True)
         except Exception:
             pass
         _clear_token(ip)
@@ -1919,13 +1928,19 @@ def lock(ip: str = None, *, username: str = None, password: str = None,
 
     client = _DeskClientV2(ip, username, password, protocol=protocol)
 
-    # Step 1: Acquire control token
+    # Step 1: Acquire control token (reuse saved token if valid)
     saved_token, saved_token_id = _load_token_state(ip)
     if saved_token is not None:
         client._token = saved_token
         client._token_id = saved_token_id
         if not client.validate_token():
-            logger.warning("Saved token is invalid, acquiring new one...")
+            # Saved token is stale — release it so take_token won't deadlock
+            logger.warning("Saved token is invalid, releasing and acquiring new one...")
+            try:
+                client.release_token(best_effort=True)
+            except Exception:
+                pass
+            _clear_token(ip)
             client._token = None
             client._token_id = None
 
@@ -1952,10 +1967,10 @@ def lock(ip: str = None, *, username: str = None, password: str = None,
         _clear_token(ip)
     except Exception:
         try:
-            client.release_token()
+            client.release_token(best_effort=True)
+            _clear_token(ip)
         except Exception:
             pass
-        _clear_token(ip)
         raise
 
     print(f"\n  {_GREEN}Locked{_RST}\n")
@@ -1985,16 +2000,21 @@ def unlock(ip: str = None, *, username: str = None, password: str = None,
 
     client = _DeskClientV2(ip, username, password, protocol=protocol)
 
-    # Release any stale token from a previous unlock
-    old_token, old_token_id = _load_token_state(ip)
-    if old_token is not None:
-        client._token = old_token
-        client._token_id = old_token_id
-        try:
-            client.release_token()
-        except Exception:
-            pass
-        _clear_token(ip)
+    # Step 1: Acquire control token (reuse saved token if valid)
+    saved_token, saved_token_id = _load_token_state(ip)
+    if saved_token is not None:
+        client._token = saved_token
+        client._token_id = saved_token_id
+        if not client.validate_token():
+            # Saved token is stale — release it so take_token won't deadlock
+            logger.warning("Saved token is invalid, releasing and acquiring new one...")
+            try:
+                client.release_token(best_effort=True)
+            except Exception:
+                pass
+            _clear_token(ip)
+            client._token = None
+            client._token_id = None
 
     # Check self-test status before starting
     self_test_due = False
@@ -2007,11 +2027,15 @@ def unlock(ip: str = None, *, username: str = None, password: str = None,
     if self_test_due:
         total += 1  # extra step for self-tests
 
-    # Step 1: Acquire control token
-    _run_with_spinner("Acquiring control token", 1, total,
-                      lambda: client._with_retry(
-                          lambda: client.take_token(timeout=15),
-                          context="take_token"))
+    if client._token is None:
+        _run_with_spinner("Acquiring control token", 1, total,
+                          lambda: client._with_retry(
+                              lambda: client.take_token(timeout=15),
+                              context="take_token"))
+    else:
+        line = _step_line(1, total, "Acquiring control token",
+                          f"{_GREEN}done{_RST} {_DIM}(reused){_RST}")
+        print(line)
 
     try:
         # Step 2: Recover safety errors (if any)
@@ -2036,8 +2060,11 @@ def unlock(ip: str = None, *, username: str = None, password: str = None,
         _save_token_state(ip, client._token, client._token_id)
     except Exception:
         # On failure, release the token so it doesn't get stuck
-        client.release_token()
-        _clear_token(ip)
+        try:
+            client.release_token(best_effort=True)
+            _clear_token(ip)
+        except Exception:
+            pass
         raise
 
     print(f"\n  {_GREEN}Unlocked{_RST} {_DIM}(FCI active){_RST}\n")
@@ -2161,4 +2188,4 @@ def set_configuration(
         return client.get_configuration()
     finally:
         if took_token:
-            client.release_token()
+            client.release_token(best_effort=True)

@@ -72,7 +72,7 @@ class RobotInterface:
         self.data = mujoco.MjData(self.model)
 
         self.torque_controller = None
-        self._last_tau_ext_hat_filtered = np.zeros(7)
+        self._tau_ext_hat_filtered = np.zeros(7)
 
         # End-effector site we wish to control.
         self.site_name = "attachment_site"
@@ -140,7 +140,7 @@ class RobotInterface:
         self.data.qpos = np.array(robot_state.q)
         self.data.qvel = np.array(robot_state.dq)
         self.data.ctrl = np.array(robot_state.tau_J_d)
-        self._last_tau_ext_hat_filtered = np.array(robot_state.tau_ext_hat_filtered)
+        self._tau_ext_hat_filtered = np.array(robot_state.tau_ext_hat_filtered)
         mujoco.mj_forward(self.model, self.data)
 
     @property
@@ -157,7 +157,6 @@ class RobotInterface:
                 - jac (np.ndarray): End-effector Jacobian (6, 7) - [linear; angular]
                 - mm (np.ndarray): Joint-space mass matrix (7, 7)
                 - last_torque (np.ndarray): Last commanded torques [Nm] (7,)
-                - tau_ext_hat_filtered (np.ndarray): Measured external joint torque estimate [Nm] (7,)
 
         Note:
             State is synchronized from real robot on every access. MuJoCo model
@@ -180,7 +179,7 @@ class RobotInterface:
             "jac": self._jacobian(),
             "mm": self._mass_matrix(),
             "last_torque": np.array(self.data.ctrl),
-            "tau_ext_hat_filtered": np.array(self._last_tau_ext_hat_filtered),
+            "tau_ext_hat_filtered": np.array(self._tau_ext_hat_filtered),
         }
 
         return state
@@ -198,7 +197,6 @@ class RobotInterface:
                 - qpos (np.ndarray): Joint positions [rad] (7,)
                 - qvel (np.ndarray): Joint velocities [rad/s] (7,)
                 - last_torque (np.ndarray): Last commanded torques [Nm] (7,)
-                - tau_ext_hat_filtered (np.ndarray): Measured external joint torque estimate [Nm] (7,)
         """
         if self.real:
             if self.torque_controller is None:

@@ -5,11 +5,8 @@ State is shared via multiprocessing.shared_memory for zero-copy reads at 1kHz.
 Commands are sent via ZMQ REQ/REP with msgpack serialization.
 """
 
-import os
 import struct
-import tempfile
 import time
-
 import numpy as np
 from multiprocessing.shared_memory import SharedMemory
 
@@ -92,20 +89,16 @@ def shm_name_for_ip(robot_ip: str) -> str:
     return f"aiofranka_{robot_ip.replace('.', '_')}"
 
 
-def _ipc_stem(robot_ip: str) -> str:
-    return f"aiofranka_{robot_ip.replace('.', '_')}_{os.getuid()}"
-
-
 def zmq_endpoint_for_ip(robot_ip: str) -> str:
-    return f"ipc://{tempfile.gettempdir()}/{_ipc_stem(robot_ip)}.sock"
+    return f"ipc:///tmp/aiofranka_{robot_ip.replace('.', '_')}.sock"
 
 
 def progress_file_for_ip(robot_ip: str) -> str:
-    return f"{tempfile.gettempdir()}/{_ipc_stem(robot_ip)}.progress"
+    return f"/tmp/aiofranka_{robot_ip.replace('.', '_')}.progress"
 
 
 def pid_file_for_ip(robot_ip: str) -> str:
-    return f"{tempfile.gettempdir()}/{_ipc_stem(robot_ip)}.pid"
+    return f"/tmp/aiofranka_{robot_ip.replace('.', '_')}.pid"
 
 
 class StateBlock:
