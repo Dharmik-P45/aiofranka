@@ -282,18 +282,31 @@ class FrankaRemoteController:
 
         self._last_update_time[attr] = target_time
 
-    def move(self, qpos=None):
+    def move(self, qpos=None, max_velocity=None, max_acceleration=None, max_jerk=None):
         """
         Move to target joint position. Blocks until complete.
 
         Args:
             qpos: Target joint positions (7,). Default: home position.
+            max_velocity: Optional per-joint velocity limit [rad/s].
+                          Default: aiofranka's built-in default (10 rad/s).
+            max_acceleration: Optional per-joint acceleration limit [rad/s²].
+                          Default: aiofranka's built-in default (5 rad/s²).
+            max_jerk: Optional per-joint jerk limit [rad/s³].
+                          Default: aiofranka's built-in default (1 rad/s³).
         """
         if qpos is None:
             qpos = [0, 0, 0.0, -1.57079, 0, 1.57079, -0.7853]
 
         qpos = np.asarray(qpos, dtype=np.float64)
-        resp = self._send({"cmd": "move", "qpos": qpos.tobytes()})
+        msg = {"cmd": "move", "qpos": qpos.tobytes()}
+        if max_velocity is not None:
+            msg["max_velocity"] = max_velocity
+        if max_acceleration is not None:
+            msg["max_acceleration"] = max_acceleration
+        if max_jerk is not None:
+            msg["max_jerk"] = max_jerk
+        resp = self._send(msg)
         if not resp.get("ok"):
             raise RuntimeError(f"Move failed: {resp.get('error')}")
 

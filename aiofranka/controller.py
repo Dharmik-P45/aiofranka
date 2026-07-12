@@ -638,7 +638,13 @@ class FrankaController:
         self.robot.step(tau_d)
 
 
-    async def move(self, qpos = [0, 0, 0.0, -1.57079, 0, 1.57079, -0.7853]):
+    async def move(
+        self,
+        qpos = [0, 0, 0.0, -1.57079, 0, 1.57079, -0.7853],
+        max_velocity = None,
+        max_acceleration = None,
+        max_jerk = None,
+    ):
         """
         Move robot to target joint position using smooth trajectory.
         
@@ -649,6 +655,12 @@ class FrankaController:
         Args:
             qpos (list | np.ndarray): Target joint positions [rad] (7,)
                                      Default: Home position
+            max_velocity (float, optional): Per-joint velocity limit [rad/s].
+                                     Default: 10 (original hardcoded value).
+            max_acceleration (float, optional): Per-joint acceleration limit
+                                     [rad/s²]. Default: 5.
+            max_jerk (float, optional): Per-joint jerk limit [rad/s³].
+                                     Default: 1.
                                      
         Note:
             - Uses Ruckig for smooth, time-optimal trajectories
@@ -657,7 +669,7 @@ class FrankaController:
             - Executes trajectory at 50 Hz (20ms updates)
             - Duration depends on distance and limits
             
-        Trajectory Limits:
+        Trajectory Limits (defaults, overridable via the parameters above):
             - Max velocity: 10 rad/s per joint
             - Max acceleration: 5 rad/s² per joint
             - Max jerk: 1 rad/s³ per joint
@@ -669,6 +681,10 @@ class FrankaController:
             Move to custom position:
                 >>> target = [0, -0.785, 0, -2.356, 0, 1.571, 0.785]
                 >>> await controller.move(target)
+            
+            Move slowly (e.g. for a gentle homing move):
+                >>> await controller.move(target, max_velocity=1.0,
+                ...                       max_acceleration=1.0, max_jerk=1.0)
             
             Move to current position + offset:
                 >>> current = controller.state['qpos']
@@ -692,9 +708,9 @@ class FrankaController:
         inp.target_velocity = np.zeros(7)
         inp.target_acceleration = np.zeros(7)
 
-        inp.max_velocity = np.ones(7) * 10
-        inp.max_acceleration = np.ones(7) * 5
-        inp.max_jerk = np.ones(7)
+        inp.max_velocity = np.ones(7) * (max_velocity if max_velocity is not None else 10)
+        inp.max_acceleration = np.ones(7) * (max_acceleration if max_acceleration is not None else 5)
+        inp.max_jerk = np.ones(7) * (max_jerk if max_jerk is not None else 1)
         
         otg = Ruckig(7)
         trajectory = Trajectory(7)
@@ -714,4 +730,3 @@ class FrankaController:
         print()
 
         # await self.stabilize()
-

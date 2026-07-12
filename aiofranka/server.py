@@ -287,9 +287,15 @@ class CommandHandler:
                 qpos = np.frombuffer(qpos, dtype=np.float64).copy()
             elif isinstance(qpos, list):
                 qpos = np.array(qpos)
+            max_velocity = msg.get("max_velocity")
+            max_acceleration = msg.get("max_acceleration")
+            max_jerk = msg.get("max_jerk")
             move_id = str(uuid.uuid4())[:8]
             self._active_moves[move_id] = {"task": None, "done": False, "error": None}
-            future = asyncio.run_coroutine_threadsafe(self._do_move(move_id, qpos), self._loop)
+            future = asyncio.run_coroutine_threadsafe(
+                self._do_move(move_id, qpos, max_velocity, max_acceleration, max_jerk),
+                self._loop,
+            )
             self._active_moves[move_id]["task"] = future
             return {"ok": True, "move_id": move_id}
 
@@ -312,9 +318,14 @@ class CommandHandler:
         else:
             return {"ok": False, "error": f"Unknown command: {cmd}"}
 
-    async def _do_move(self, move_id: str, qpos):
+    async def _do_move(self, move_id: str, qpos, max_velocity=None, max_acceleration=None, max_jerk=None):
         try:
-            await self.controller.move(qpos)
+            await self.controller.move(
+                qpos,
+                max_velocity=max_velocity,
+                max_acceleration=max_acceleration,
+                max_jerk=max_jerk,
+            )
             self._active_moves[move_id]["done"] = True
         except Exception as e:
             self._active_moves[move_id]["done"] = True
