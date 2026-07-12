@@ -711,7 +711,7 @@ class FrankaController:
         inp.max_velocity = np.ones(7) * (max_velocity if max_velocity is not None else 10)
         inp.max_acceleration = np.ones(7) * (max_acceleration if max_acceleration is not None else 5)
         inp.max_jerk = np.ones(7) * (max_jerk if max_jerk is not None else 1)
-        
+        print(f"[DEBUG move()] max_velocity={max_velocity}  max_acceleration={max_acceleration}  max_jerk={max_jerk}")
         otg = Ruckig(7)
         trajectory = Trajectory(7)
 
