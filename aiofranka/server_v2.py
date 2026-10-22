@@ -26,6 +26,7 @@ from aiofranka.robot import RobotInterface
 from aiofranka.server import (
     ServerController, run_server,
     _resolve_from_config,
+    RT_FIFO_PRIORITY,
 )
 
 logger = logging.getLogger("aiofranka.server")
@@ -89,8 +90,8 @@ class ServerControllerV2(ServerController):
         except Exception as e:
             logger.warning(f"Could not pin RT thread to CPU {rt_core}: {e}")
         try:
-            os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(80))
-            logger.info("RT thread set to SCHED_FIFO priority 80")
+            os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(RT_FIFO_PRIORITY))
+            logger.info(f"RT thread set to SCHED_FIFO priority {RT_FIFO_PRIORITY}")
         except PermissionError:
             logger.warning("Could not set SCHED_FIFO (no permission) — run with CAP_SYS_NICE for best RT performance")
         except Exception as e:

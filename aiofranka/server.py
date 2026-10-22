@@ -31,6 +31,7 @@ from aiofranka.controller import FrankaController
 from aiofranka.ipc import (
     StateBlock,
     zmq_endpoint_for_ip,
+    zmq_tcp_bind_endpoint,
     pid_file_for_ip,
     progress_file_for_ip,
     STATUS_STOPPED,
@@ -40,6 +41,14 @@ from aiofranka.ipc import (
 from aiofranka.robot import RobotInterface
 
 logger = logging.getLogger("aiofranka.server")
+
+# SCHED_FIFO priority for the 1kHz control thread. Max (99), not the more
+# conventional 80 -- on machines running kernel-hooked endpoint security
+# agents (e.g. Elastic Endpoint's eBPF/kprobe syscall monitoring), the
+# overhead happens inside this thread's own syscalls and isn't something a
+# merely-high priority can out-schedule; 80 reflexed with
+# communication_constraints_violation on every single run, 99 did not.
+RT_FIFO_PRIORITY = 99
 
 # Gain attributes that can be set remotely
 _GAIN_ATTRS = {
@@ -178,8 +187,8 @@ class ServerController(FrankaController):
             logger.warning(f"Could not pin to CPU {rt_core}: {e}")
         # Elevate to SCHED_FIFO real-time priority
         try:
-            os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(80))
-            logger.info("Control loop set to SCHED_FIFO priority 80")
+            os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(RT_FIFO_PRIORITY))
+            logger.info(f"Control loop set to SCHED_FIFO priority {RT_FIFO_PRIORITY}")
         except PermissionError:
             logger.warning("Could not set SCHED_FIFO (no permission) — run with CAP_SYS_NICE")
         except Exception as e:
@@ -232,7 +241,9 @@ class CommandHandler:
             os.unlink(sock_path)
 
         sock.bind(endpoint)
-        logger.info(f"ZMQ REP bound to {endpoint}")
+        tcp_endpoint = zmq_tcp_bind_endpoint()
+        sock.bind(tcp_endpoint)
+        logger.info(f"ZMQ REP bound to {endpoint} and {tcp_endpoint}")
 
         try:
             while not self._should_stop:
@@ -263,6 +274,27 @@ class CommandHandler:
                 "ip": self.robot_ip,
                 "error": self.controller._last_error,
             }
+
+        elif cmd == "get_state":
+            # For network (tcp://) clients that can't attach to the server's
+            # local shared memory directly -- same state, serialized over
+            # msgpack instead of a zero-copy mapping. See remote.py's
+            # FrankaRemoteController(host=...) for the client side.
+            status = self.shm.read_status()
+            if status == STATUS_ERROR:
+                return {"ok": False, "error": self.shm.read_error()}
+            state = self.shm.read_state()
+            packed = {}
+            for k, v in state.items():
+                if isinstance(v, np.ndarray):
+                    packed[k] = {
+                        "__nd__": True,
+                        "data": v.astype(np.float64).tobytes(),
+                        "shape": list(v.shape),
+                    }
+                else:
+                    packed[k] = v
+            return {"ok": True, "state": packed}
 
         elif cmd == "switch":
             ctrl_type = msg["type"]
