@@ -25,12 +25,27 @@ Quick Example:
 For detailed documentation, see README.md and USAGE_GUIDE.md
 """
 
-from aiofranka.controller import FrankaController
-from aiofranka.robot import RobotInterface
 from aiofranka.async_utils import asyncify, async_input, CudaInferenceThread, mpify
 from aiofranka.remote import FrankaRemoteController, ServerDiedError
 from aiofranka.remote_v2 import FrankaRemoteControllerV2
-from aiofranka.server import start, stop, lock, unlock, set_configuration
+
+__version__ = "0.1.0"
+__all__ = ["FrankaRemoteController", "FrankaRemoteControllerV2", "ServerDiedError", "asyncify", "async_input", "CudaInferenceThread", "mpify"]
+
+# Server/sim-only imports (need mujoco + pylibfranka) - optional, so a
+# client-only environment (e.g. running a trained policy, which only needs
+# FrankaRemoteController's shared-memory + ZMQ client) doesn't need mujoco
+# installed at all. Same pattern as the Robotiq guard below.
+try:
+    from aiofranka.controller import FrankaController
+    from aiofranka.robot import RobotInterface
+    from aiofranka.server import start, stop, lock, unlock, set_configuration
+    _HAS_SERVER = True
+except ImportError:
+    _HAS_SERVER = False
+
+if _HAS_SERVER:
+    __all__.extend(["RobotInterface", "FrankaController", "start", "stop", "lock", "unlock", "set_configuration"])
 
 # Optional gripper support - only import if dependencies are available
 try:
@@ -39,9 +54,6 @@ try:
     _HAS_ROBOTIQ = True
 except ImportError:
     _HAS_ROBOTIQ = False
-
-__version__ = "0.1.0"
-__all__ = ["RobotInterface", "FrankaController", "FrankaRemoteController", "FrankaRemoteControllerV2", "ServerDiedError", "asyncify", "async_input", "CudaInferenceThread", "mpify", "start", "stop", "lock", "unlock", "set_configuration"]
 
 if _HAS_ROBOTIQ:
     __all__.extend(["GripperController", "GripperRemoteController", "RobotiqGripperInterface", "create_gripper"])

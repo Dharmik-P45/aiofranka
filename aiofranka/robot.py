@@ -73,6 +73,7 @@ class RobotInterface:
 
         self.torque_controller = None
         self._last_tau_ext_hat_filtered = np.zeros(7)
+        self._last_o_f_ext_hat_k = np.zeros(6)
 
         # End-effector site we wish to control.
         self.site_name = "attachment_site"
@@ -141,6 +142,7 @@ class RobotInterface:
         self.data.qvel = np.array(robot_state.dq)
         self.data.ctrl = np.array(robot_state.tau_J_d)
         self._last_tau_ext_hat_filtered = np.array(robot_state.tau_ext_hat_filtered)
+        self._last_o_f_ext_hat_k = np.array(robot_state.O_F_ext_hat_K)
         mujoco.mj_forward(self.model, self.data)
 
     @property
@@ -158,6 +160,10 @@ class RobotInterface:
                 - mm (np.ndarray): Joint-space mass matrix (7, 7)
                 - last_torque (np.ndarray): Last commanded torques [Nm] (7,)
                 - tau_ext_hat_filtered (np.ndarray): Measured external joint torque estimate [Nm] (7,)
+                - o_f_ext_hat_k (np.ndarray): libfranka's own estimated external wrench in the
+                  base frame O, [fx,fy,fz,mx,my,mz] (6,) -- franka::RobotState::O_F_ext_hat_K,
+                  a direct hardware/firmware estimate independent of any Jacobian-based
+                  reconstruction from tau_ext_hat_filtered.
 
         Note:
             State is synchronized from real robot on every access. MuJoCo model
@@ -181,6 +187,7 @@ class RobotInterface:
             "mm": self._mass_matrix(),
             "last_torque": np.array(self.data.ctrl),
             "tau_ext_hat_filtered": np.array(self._last_tau_ext_hat_filtered),
+            "o_f_ext_hat_k": np.array(self._last_o_f_ext_hat_k),
         }
 
         return state
@@ -199,6 +206,8 @@ class RobotInterface:
                 - qvel (np.ndarray): Joint velocities [rad/s] (7,)
                 - last_torque (np.ndarray): Last commanded torques [Nm] (7,)
                 - tau_ext_hat_filtered (np.ndarray): Measured external joint torque estimate [Nm] (7,)
+                - o_f_ext_hat_k (np.ndarray): libfranka's own estimated external wrench in the
+                  base frame O, [fx,fy,fz,mx,my,mz] (6,) -- franka::RobotState::O_F_ext_hat_K.
         """
         if self.real:
             if self.torque_controller is None:
@@ -211,6 +220,7 @@ class RobotInterface:
                 "qvel": np.array(robot_state.dq),
                 "last_torque": np.array(robot_state.tau_J_d),
                 "tau_ext_hat_filtered": np.array(robot_state.tau_ext_hat_filtered),
+                "o_f_ext_hat_k": np.array(robot_state.O_F_ext_hat_K),
             }
         else:
             # Simulation: still need mj_forward for accurate velocities
@@ -220,7 +230,8 @@ class RobotInterface:
                 "qvel": np.array(self.data.qvel),
                 "last_torque": np.array(self.data.ctrl),
                 "tau_ext_hat_filtered": np.zeros(7),
-            } 
+                "o_f_ext_hat_k": np.zeros(6),
+            }
 
     def _mass_matrix(self): 
         """ Compute mass matrix at current state """

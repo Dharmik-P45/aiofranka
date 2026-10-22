@@ -9,6 +9,8 @@ Features:
   - Always releases control token on shutdown (crash or clean)
 """
 
+from __future__ import annotations
+
 import asyncio
 import atexit
 import json
@@ -72,6 +74,7 @@ class ServerController(FrankaController):
         self._qvel_buf = np.empty(model.nv)
         self._ctrl_buf = np.empty(model.nu)
         self._tau_ext_buf = np.zeros(7)
+        self._o_f_ext_hat_k_buf = np.zeros(6)
         self._zero_torque = np.zeros(7)
 
     def step(self):
@@ -86,9 +89,11 @@ class ServerController(FrankaController):
             data.qvel[:] = robot_state.dq
             data.ctrl[:] = robot_state.tau_J_d
             np.copyto(self._tau_ext_buf, robot_state.tau_ext_hat_filtered)
+            np.copyto(self._o_f_ext_hat_k_buf, robot_state.O_F_ext_hat_K)
             mujoco.mj_forward(model, data)
         else:
             self._tau_ext_buf[:] = 0.0
+            self._o_f_ext_hat_k_buf[:] = 0.0
 
         # Build state using pre-allocated buffers (no per-iteration allocation)
         self._ee_buf[:3, :3] = data.site(robot.site_id).xmat.reshape(3, 3)
@@ -112,6 +117,7 @@ class ServerController(FrankaController):
             "mm": self._mm_buf,
             "last_torque": self._ctrl_buf,
             "tau_ext_hat_filtered": self._tau_ext_buf,
+            "o_f_ext_hat_k": self._o_f_ext_hat_k_buf,
         }
 
         # Run control law
@@ -129,6 +135,7 @@ class ServerController(FrankaController):
             "qpos": self._qpos_buf, "qvel": self._qvel_buf, "ee": self._ee_buf,
             "jac": self._jac_buf, "mm": self._mm_buf, "last_torque": self._ctrl_buf,
             "tau_ext_hat_filtered": self._tau_ext_buf,
+            "o_f_ext_hat_k": self._o_f_ext_hat_k_buf,
             "q_desired": self.q_desired,
             "ee_desired": self.ee_desired,
             "torque": getattr(self, "torque", self._zero_torque),

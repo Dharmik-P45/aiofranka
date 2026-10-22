@@ -28,6 +28,11 @@ _FIELDS = [
     ("mm", (7, 7), np.float64),
     ("last_torque", (7,), np.float64),
     ("tau_ext_hat_filtered", (7,), np.float64),
+    # libfranka's own estimated external wrench, base frame O, [fx,fy,fz,mx,my,mz]
+    # (franka::RobotState::O_F_ext_hat_K) -- a direct hardware/firmware estimate,
+    # independent of and complementary to bis_features.wrench's own Jacobian-based
+    # least-squares reconstruction from tau_ext_hat_filtered.
+    ("o_f_ext_hat_k", (6,), np.float64),
     # Controller state
     ("q_desired", (7,), np.float64),
     ("ee_desired", (4, 4), np.float64),

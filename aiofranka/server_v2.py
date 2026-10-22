@@ -129,6 +129,7 @@ class ServerControllerV2(ServerController):
         _qvel = np.empty(model.nv)
         _ctrl = np.empty(model.nu)
         _tau_ext = np.zeros(7)
+        _o_f_ext_hat_k = np.zeros(6)
         _zero_torque = np.zeros(7)
 
         try:
@@ -144,12 +145,14 @@ class ServerControllerV2(ServerController):
                     data.qvel[:] = robot_state.dq
                     data.ctrl[:] = robot_state.tau_J_d
                     np.copyto(_tau_ext, robot_state.tau_ext_hat_filtered)
+                    np.copyto(_o_f_ext_hat_k, robot_state.O_F_ext_hat_K)
                     mujoco.mj_forward(model, data)
                     t3 = time.perf_counter()
                 else:
                     t2 = t1
                     t3 = t1
                     _tau_ext[:] = 0.0
+                    _o_f_ext_hat_k[:] = 0.0
 
                 # === Phase 3: build state dict (ee, jac, mm) ===
                 _ee[:3, :3] = data.site(site_id).xmat.reshape(3, 3)
@@ -173,6 +176,7 @@ class ServerControllerV2(ServerController):
                     "mm": _mm,
                     "last_torque": _ctrl,
                     "tau_ext_hat_filtered": _tau_ext,
+                    "o_f_ext_hat_k": _o_f_ext_hat_k,
                 }
                 self.state = state
                 t4 = time.perf_counter()
@@ -196,6 +200,7 @@ class ServerControllerV2(ServerController):
                     "qpos": _qpos, "qvel": _qvel, "ee": _ee,
                     "jac": _jac, "mm": _mm, "last_torque": _ctrl,
                     "tau_ext_hat_filtered": _tau_ext,
+                    "o_f_ext_hat_k": _o_f_ext_hat_k,
                     "q_desired": self.q_desired,
                     "ee_desired": self.ee_desired,
                     "torque": getattr(self, "torque", _zero_torque),
