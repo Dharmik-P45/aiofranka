@@ -113,6 +113,25 @@ def pid_file_for_ip(robot_ip: str) -> str:
     return f"{tempfile.gettempdir()}/{_ipc_stem(robot_ip)}.pid"
 
 
+# --- Network (cross-machine) command channel ---
+# The ipc:// endpoint above only works between processes on the same host
+# (shared memory + unix socket). For a client running on a different machine
+# than the server (e.g. GELLO teleop reading a USB leader device on one box
+# while the control loop runs on another), the server's REP socket also binds
+# this tcp:// endpoint, and the client connects to it directly by IP instead
+# of spawning a local subprocess. Command/response semantics (msgpack over
+# ZMQ REQ/REP) are identical on both transports.
+DEFAULT_TCP_PORT = 5555
+
+
+def zmq_tcp_bind_endpoint(port: int = DEFAULT_TCP_PORT) -> str:
+    return f"tcp://0.0.0.0:{port}"
+
+
+def zmq_tcp_connect_endpoint(host: str, port: int = DEFAULT_TCP_PORT) -> str:
+    return f"tcp://{host}:{port}"
+
+
 class StateBlock:
     """Wraps a SharedMemory segment with typed numpy views for robot state."""
 

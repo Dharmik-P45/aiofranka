@@ -17,7 +17,13 @@ import msgpack
 import numpy as np
 import zmq
 
-from aiofranka.ipc import StateBlock, zmq_endpoint_for_ip, STATUS_ERROR
+from aiofranka.ipc import (
+    StateBlock,
+    zmq_endpoint_for_ip,
+    zmq_tcp_connect_endpoint,
+    DEFAULT_TCP_PORT,
+    STATUS_ERROR,
+)
 
 logger = logging.getLogger("aiofranka.remote")
 
@@ -66,11 +72,21 @@ class FrankaRemoteController:
     Connects to a running aiofranka server process and provides the same
     API as FrankaController, but fully synchronous (no async/await needed).
 
-    The 1kHz control loop runs in the server process. This client sends
-    commands via ZMQ and reads state from shared memory (zero-copy).
+    The 1kHz control loop runs in the server process. By default (``host=
+    None``) this client spawns and owns a server subprocess on the local
+    machine, sends commands via ZMQ, and reads state from shared memory
+    (zero-copy) -- the original same-machine Server Mode.
+
+    Passing ``host`` instead attaches to a server *already running on a
+    different machine* (started there with ``aiofranka start-server``, e.g.
+    as a systemd service). No subprocess is spawned and nothing is torn down
+    on ``stop()`` -- this client is just one of possibly several consumers
+    of a long-lived remote control loop. State reads go over the network
+    (via a ``get_state`` ZMQ command) instead of shared memory, since shared
+    memory can't cross machines; everything else is unchanged.
 
     Examples:
-        >>> controller = FrankaRemoteController()  # default IP
+        >>> controller = FrankaRemoteController()  # spawns + owns a local server
         >>> controller.start()
         >>> controller.switch("impedance")
         >>> controller.set_freq(50)
@@ -78,13 +94,23 @@ class FrankaRemoteController:
         ...     state = controller.state
         ...     controller.set("q_desired", target)
         >>> controller.stop()
+
+        >>> # Attach to a server already running on another machine, e.g. a
+        >>> # NUC wired directly to the robot while this process reads a
+        >>> # USB teleop device locally:
+        >>> controller = FrankaRemoteController(host="192.168.2.200")
+        >>> controller.start()
+        >>> state = controller.state  # network round-trip, not shared memory
     """
 
-    def __init__(self, robot_ip: str = None, *, home: bool = True):
+    def __init__(self, robot_ip: str = None, *, home: bool = True,
+                 host: str = None, port: int = None):
         if robot_ip is None:
             robot_ip = _load_last_ip()
         self.robot_ip = robot_ip
         self._home = home
+        self._host = host
+        self._port = port if port is not None else DEFAULT_TCP_PORT
 
         self._shm = None
         self._zmq_ctx = None
@@ -100,11 +126,16 @@ class FrankaRemoteController:
         self.state_lock = threading.Lock()
 
     def start(self):
-        """Start the server subprocess and connect.
+        """Start the server subprocess and connect, or attach to a remote one.
 
-        Spawns a 1kHz control loop in a child process, then connects to it
-        via shared memory and ZMQ. The subprocess terminates automatically
-        when this script exits.
+        With ``host=None`` (default): spawns a 1kHz control loop in a local
+        child process, then connects to it via shared memory and ZMQ. The
+        subprocess terminates automatically when this script exits.
+
+        With ``host`` set: attaches to a server already running on that
+        machine (e.g. started there with ``aiofranka start-server``). No
+        subprocess is spawned, and ``stop()`` will not shut the remote
+        server down -- only this client's own connection.
 
         The robot must already be unlocked with FCI active (via
         ``aiofranka.unlock()`` or the Franka Desk web GUI). If not, the
@@ -112,11 +143,33 @@ class FrankaRemoteController:
         is printed.
 
         Raises:
-            RuntimeError: If the server fails to start.
+            RuntimeError: If the server fails to start, or a remote server
+                isn't reachable/running.
         """
-        from aiofranka.server import start_subprocess
-
         _GREEN = "\033[32m"
+
+        if self._host is not None:
+            print(f"\n  {_BOLD}aiofranka{_RST} {_DIM}|{_RST} "
+                  f"connecting to remote server {_DIM}({self._host}:{self._port}){_RST}\n")
+
+            self._zmq_ctx = zmq.Context()
+            self._zmq_sock = self._zmq_ctx.socket(zmq.REQ)
+            self._zmq_sock.setsockopt(zmq.RCVTIMEO, 2000)
+            self._zmq_sock.setsockopt(zmq.SNDTIMEO, 2000)
+            self._zmq_sock.connect(zmq_tcp_connect_endpoint(self._host, self._port))
+
+            resp = self._send({"cmd": "status"})
+            if not resp.get("running"):
+                raise RuntimeError(
+                    f"Remote server at {self._host}:{self._port} is not running. "
+                    f"Start it there first with: aiofranka start-server --ip {self.robot_ip}"
+                )
+
+            self._connected = True
+            print(f"  {_GREEN}Ready{_RST} {_DIM}(remote, {self._host}:{self._port}){_RST}\n")
+            return
+
+        from aiofranka.server import start_subprocess
 
         print(f"\n  {_BOLD}aiofranka{_RST} {_DIM}|{_RST} "
               f"starting server {_DIM}({self.robot_ip}){_RST}\n")
@@ -157,8 +210,10 @@ class FrankaRemoteController:
         print(f"  {_GREEN}Ready{_RST} {_DIM}(PID {self._server_proc.pid}){_RST}\n")
 
     def stop(self):
-        """Stop the server subprocess and disconnect."""
-        if self._connected:
+        """Stop the server subprocess and disconnect (local mode), or just
+        disconnect without touching the remote control loop (``host`` mode)
+        -- a network client doesn't own the remote server's lifecycle."""
+        if self._connected and self._host is None:
             try:
                 self._send({"cmd": "stop"})
             except Exception:
@@ -193,6 +248,10 @@ class FrankaRemoteController:
 
     def _check_server_alive(self):
         """Raise if the server has died or errored."""
+        if self._host is not None:
+            if self._zmq_sock is None:
+                raise RuntimeError("Not connected. Call start() first.")
+            return  # checked per-call via get_state's own ok/error field
         if self._shm is None:
             raise RuntimeError("Not connected. Call start() first.")
         status = self._shm.read_status()
@@ -203,8 +262,19 @@ class FrankaRemoteController:
 
     @property
     def state(self) -> dict:
-        """Read current robot state from shared memory (zero-copy, no IPC overhead)."""
+        """Read current robot state.
+
+        Local mode: shared memory (zero-copy, no IPC overhead).
+        Remote (``host``) mode: one ZMQ round-trip (``get_state`` command) --
+        shared memory can't cross machines, so this is the network fallback.
+        """
         self._check_server_alive()
+        if self._host is not None:
+            resp = self._send({"cmd": "get_state"})
+            if not resp.get("ok"):
+                self._connected = False
+                raise ServerDiedError(resp.get("error") or "Unknown server error")
+            return _unpack_state(resp["state"])
         return self._shm.read_state()
 
     @property
@@ -381,6 +451,17 @@ class FrankaRemoteController:
     def __del__(self):
         self._disconnect()
         self._terminate_server()
+
+
+def _unpack_state(packed: dict) -> dict:
+    """Inverse of the server's get_state packing (see server.py CommandHandler)."""
+    state = {}
+    for k, v in packed.items():
+        if isinstance(v, dict) and v.get("__nd__"):
+            state[k] = np.frombuffer(v["data"], dtype=np.float64).reshape(v["shape"]).copy()
+        else:
+            state[k] = v
+    return state
 
 
 def _load_last_ip() -> str:
