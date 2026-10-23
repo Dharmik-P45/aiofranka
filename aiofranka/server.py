@@ -194,6 +194,18 @@ class ServerController(FrankaController):
         except Exception as e:
             logger.warning(f"Could not set SCHED_FIFO: {e}")
 
+        # CPython's GIL switch interval defaults to 5ms -- a thread can hold
+        # the GIL that long before yielding, regardless of OS thread
+        # priority (SCHED_FIFO above governs OS scheduling, not the GIL).
+        # The ZMQ CommandHandler thread processes a "set" request on every
+        # incoming command -- under active teleop that's every control
+        # tick, far more often than while just holding position -- so each
+        # one can delay this loop's own turn with the GIL by up to the full
+        # switch interval, which alone exceeds the 1ms budget. Shortening it
+        # makes that handoff much more frequent.
+        sys.setswitchinterval(0.0005)
+        logger.info("GIL switch interval set to 0.5ms")
+
         self.running = True
         try:
             while self.running:
