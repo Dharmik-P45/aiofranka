@@ -711,22 +711,24 @@ class FrankaController:
         inp.max_velocity = np.ones(7) * (max_velocity if max_velocity is not None else 10)
         inp.max_acceleration = np.ones(7) * (max_acceleration if max_acceleration is not None else 5)
         inp.max_jerk = np.ones(7) * (max_jerk if max_jerk is not None else 1)
-        print(f"[DEBUG move()] max_velocity={max_velocity}  max_acceleration={max_acceleration}  max_jerk={max_jerk}")
         otg = Ruckig(7)
         trajectory = Trajectory(7)
 
         otg.calculate(inp, trajectory)
 
-        # create a trajectory to the desired qpos  (linear interpolation)
+        # create a trajectory to the desired qpos (linear interpolation).
+        # No per-iteration print here: this coroutine runs on the same
+        # asyncio event loop as the 1kHz torque control loop
+        # (CommandHandler._do_move schedules it via
+        # run_coroutine_threadsafe onto that same loop), so any blocking
+        # I/O here -- print(..., flush=True) included, especially once
+        # stdout is redirected through systemd/journald instead of a TTY --
+        # steals time from the real-time loop between its own yields and
+        # shows up as control jitter/oscillation, worst on the
+        # lowest-inertia joints.
         n_steps = int(trajectory.duration * 50)
-        eta_total = trajectory.duration
         for i in range(n_steps):
             q_desired, _, _ = trajectory.at_time(i / 50.0)
             await self.set("q_desired", q_desired)
-            done = (i + 1) * 20 // n_steps
-            bar = "█" * done + "░" * (20 - done)
-            eta = eta_total - (i + 1) / 50.0
-            print(f"\r  Moving [{bar}] {(i + 1) * 100 // n_steps}% ETA {eta:.1f}s", end="", flush=True)
-        print()
 
         # await self.stabilize()
