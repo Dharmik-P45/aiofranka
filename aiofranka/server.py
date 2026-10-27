@@ -263,6 +263,25 @@ class CommandHandler:
             sock.close()
             ctx.term()
 
+    def _read_and_pack_state(self) -> dict:
+        """Shared by the "get_state" and "step" commands -- identical
+        packing, just called from two different request shapes."""
+        status = self.shm.read_status()
+        if status == STATUS_ERROR:
+            return {"ok": False, "error": self.shm.read_error()}
+        state = self.shm.read_state()
+        packed = {}
+        for k, v in state.items():
+            if isinstance(v, np.ndarray):
+                packed[k] = {
+                    "__nd__": True,
+                    "data": v.astype(np.float64).tobytes(),
+                    "shape": list(v.shape),
+                }
+            else:
+                packed[k] = v
+        return {"ok": True, "state": packed}
+
     def _handle(self, msg: dict) -> dict:
         cmd = msg.get("cmd")
 
@@ -280,21 +299,28 @@ class CommandHandler:
             # local shared memory directly -- same state, serialized over
             # msgpack instead of a zero-copy mapping. See remote.py's
             # FrankaRemoteController(host=...) for the client side.
-            status = self.shm.read_status()
-            if status == STATUS_ERROR:
-                return {"ok": False, "error": self.shm.read_error()}
-            state = self.shm.read_state()
-            packed = {}
-            for k, v in state.items():
-                if isinstance(v, np.ndarray):
-                    packed[k] = {
-                        "__nd__": True,
-                        "data": v.astype(np.float64).tobytes(),
-                        "shape": list(v.shape),
-                    }
+            return self._read_and_pack_state()
+
+        elif cmd == "step":
+            # Combined set + get_state in one ZMQ round-trip, for network
+            # clients whose tight control loops need both every tick (e.g.
+            # GELLO teleop over a NUC link) -- halves the round-trips a
+            # plain set()-then-state pattern would need. attr/value are
+            # optional: with neither, this is just get_state again.
+            attr = msg.get("attr")
+            if attr is not None:
+                value = msg["value"]
+                if isinstance(value, (bytes, bytearray)):
+                    value = np.frombuffer(value, dtype=np.float64).copy()
+                    shape = msg.get("shape")
+                    if shape:
+                        value = value.reshape(shape)
+                if attr in _TARGET_ATTRS or attr in _GAIN_ATTRS:
+                    with self.controller.state_lock:
+                        setattr(self.controller, attr, value)
                 else:
-                    packed[k] = v
-            return {"ok": True, "state": packed}
+                    return {"ok": False, "error": f"Unknown attribute: {attr}"}
+            return self._read_and_pack_state()
 
         elif cmd == "switch":
             ctrl_type = msg["type"]

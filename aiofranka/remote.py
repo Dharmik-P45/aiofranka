@@ -352,6 +352,60 @@ class FrankaRemoteController:
 
         self._last_update_time[attr] = target_time
 
+    def step(self, attr: str, value) -> dict:
+        """
+        Combined set() + state-read, for tight loops that need both every
+        tick (e.g. GELLO teleop). In host (``host=``) mode this folds what
+        would otherwise be two separate blocking ZMQ round-trips -- set()'s
+        own round-trip, then a separate ``state`` read -- into one, which
+        roughly halves per-tick network latency without changing what's
+        set or what's returned. In local mode it's exactly ``set()``
+        followed by reading ``state`` (shared memory either way, no round
+        trip to save) -- composed here purely so callers have one API
+        regardless of mode; local-mode behavior is unchanged.
+
+        Args:
+            attr: "q_desired", "ee_desired", or "torque" (same as set()).
+            value: numpy array.
+
+        Returns:
+            Freshly-read state dict (same keys/shapes as the ``state`` property).
+        """
+        if self._host is None:
+            self.set(attr, value)
+            return self.state
+
+        self._check_server_alive()
+        current_time = time.perf_counter()
+        dt = 1.0 / self._update_freq
+        value = np.asarray(value, dtype=np.float64)
+
+        if attr not in self._last_update_time:
+            self._last_update_time[attr] = current_time
+            resp = self._send_step(attr, value)
+            time.sleep(dt)
+            self._last_update_time[attr] = current_time + dt
+        else:
+            target_time = self._last_update_time[attr] + dt
+            resp = self._send_step(attr, value)
+            sleep_time = target_time - time.perf_counter()
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            self._last_update_time[attr] = target_time
+
+        if not resp.get("ok"):
+            self._connected = False
+            raise ServerDiedError(resp.get("error") or "Unknown server error")
+        return _unpack_state(resp["state"])
+
+    def _send_step(self, attr: str, value: np.ndarray) -> dict:
+        return self._send({
+            "cmd": "step",
+            "attr": attr,
+            "value": value.astype(np.float64).tobytes(),
+            "shape": list(value.shape),
+        })
+
     def move(self, qpos=None, max_velocity=None, max_acceleration=None, max_jerk=None):
         """
         Move to target joint position. Blocks until complete.
